@@ -1,0 +1,146 @@
+---
+title: "Introduction to HTDV"
+author: "José Mauricio Gómez Julián"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{Introduction to HTDV}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE,
+  purl = FALSE
+)
+```
+
+# Overview
+
+`HTDV` provides hypothesis testing and estimation for dependent, unbalanced
+data through four integrated layers: (i) spectrally-faithful likelihoods
+(Whittle, composite), (ii) hierarchical Bayesian priors on the dependence
+nuisance parameters, (iii) Hamiltonian Monte Carlo with mandatory diagnostic
+gates, and (iv) a Bayesian decision layer (ROPE, bridge-sampling Bayes
+factors, WAIC, leave-future-out cross-validation, stacking). Finite-sample
+robustness is delivered by fixed-bandwidth HAR inference, block bootstrap
+with automatic block length, and adaptive conformal prediction.
+
+# Quick start: long-run variance and fixed-b HAR
+
+```{r}
+library(HTDV)
+
+x <- stats::arima.sim(model = list(ar = 0.6), n = 200,
+                      rand.gen = stats::rnorm)
+x <- as.numeric(x)
+
+lrv <- htdv_lrv(x, kernel = "qs", bandwidth = "andrews")
+lrv$lrv
+
+test <- htdv_fixedb(x, theta0 = 0, B = 0.1,
+                    sims = 1000L, seed = 1L)
+test$p_value
+```
+
+# Block bootstrap
+
+```{r}
+boot <- htdv_boot(x, mean, R = 1999L,
+                  type = "stationary",
+                  block_length = "auto",
+                  seed = 1L)
+boot$ci_percentile
+boot$block_length
+```
+
+# Adaptive conformal
+
+```{r}
+pred <- function(history) {
+  if (length(history) >= 1L) history[length(history)] else 0
+}
+conf <- htdv_conformal(x, pred, alpha_target = 0.1,
+                       lambda = 0.05, burn_in = 20L)
+conf$coverage
+```
+
+# Hierarchical Bayesian fit
+
+The default `htdv_fit()` compiles a Stan model on first use and caches it for
+subsequent calls.
+
+```{r}
+fit <- htdv_fit(x, model = "tac", chains = 4L, iter = 4000L,
+                refresh = 0L, seed = 1L)
+htdv_summary(fit, rope = c(-0.1, 0.1), target = "theta")
+htdv_diagnostics(fit)$passed
+htdv_ppc(fit, x)
+```
+
+# Envelope across likelihoods
+
+```{r}
+fit_w <- htdv_fit(x, model = "whittle", chains = 4L, iter = 4000L,
+                  refresh = 0L, seed = 2L)
+fit_c <- htdv_fit(x, model = "composite", chains = 4L, iter = 4000L,
+                  refresh = 0L, seed = 3L)
+
+env <- htdv_envelope(list(whittle = fit_w, composite = fit_c),
+                     target = "theta")
+env$intervals
+```
+
+# Decision: ROPE, Bayes factor, stacking
+
+```{r}
+draws <- as.numeric(rstan::extract(fit$stanfit, pars = "theta")$theta)
+htdv_rope(draws, rope = c(-0.1, 0.1))$decision
+
+if (requireNamespace("bridgesampling", quietly = TRUE)) {
+  htdv_bf(fit_w, fit_c)$bf10
+}
+
+if (requireNamespace("loo", quietly = TRUE)) {
+  htdv_stack(list(whittle = fit_w, composite = fit_c))$weights
+}
+```
+
+# Explicit equivalence constants
+
+```{r}
+htdv_equivalence_constants(gamma = 2, q = 6, n = length(x))
+```
+
+# References
+
+Andrews, D. W. K. (1991). Econometrica 59(3): 817-858.
+
+Berger, J. O. (1994). Test 3(1): 5-124.
+
+Gibbs, I., & Candes, E. (2021). NeurIPS 34: 1660-1672.
+
+Kiefer, N. M., & Vogelsang, T. J. (2005). Econometric Theory 21(6): 1130-1164.
+
+Kruschke, J. K. (2018). Advances in Methods and Practices in Psychological
+Science 1(2): 270-280.
+
+Patton, A., Politis, D. N., & White, H. (2009). Econometric Reviews 28(4):
+372-375.
+
+Varin, C., Reid, N., & Firth, D. (2011). Statistica Sinica 21(1): 5-42.
+
+Vehtari, A., Gelman, A., & Gabry, J. (2017). Statistics and Computing 27(5):
+1413-1432.
+
+Watanabe, S. (2010). JMLR 11: 3571-3594.
+
+Whittle, P. (1953). Arkiv foer Matematik 2(5): 423-434.
+
+Yao, Y., Vehtari, A., Simpson, D., & Gelman, A. (2018). Bayesian Analysis
+13(3): 917-1007.

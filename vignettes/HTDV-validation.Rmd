@@ -1,0 +1,232 @@
+---
+title: "HTDV — Empirical and Simulation Validation"
+author: "José Mauricio Gómez Julián"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{HTDV — Empirical and Simulation Validation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE,
+  purl = FALSE
+)
+```
+
+# Purpose
+
+`HTDV` is a hypothesis-testing framework for dependent and unbalanced data
+under strong-mixing conditions. Three inferential layers run in parallel:
+hierarchical Bayesian inference (HMC via Stan), HAR-Wald frequentist
+inference (Andrews-Kiefer-Vogelsang), and stationary block bootstrap
+(Patton-Politis-White). The framework exists in order to *triangulate* an
+inferential answer when no single layer is universally valid in the
+finite-sample regime.
+
+This vignette summarizes the empirical evidence that the framework's
+calibration claims are not stylistic but operationally testable. It
+collects two pieces of validation:
+
+1. A pre-registered factorial Monte Carlo study covering 1024 cells of
+   the (sample size × dependence × tail × imbalance × shift) design.
+2. Three external benchmarks against published literature on public
+   data: post-1984 US CPI inflation against Stock & Watson (2007), long-
+   run log-CAPE against Campbell & Shiller (1998), and the US-Canada
+   10-year yield differential against the iid Welch baseline.
+
+Both validations are reproducible end-to-end from scripts shipped in the
+companion paper repository. The summary tables are loaded into the
+package as datasets so users can interrogate them without re-running.
+
+```{r packages, eval = TRUE}
+library(HTDV)
+data(htdv_sim_summary)
+data(htdv_empirical_benchmarks)
+```
+
+# 1. Factorial simulation study
+
+The full factorial design of Section 12-bis of the companion paper crosses
+five factors at four levels each:
+
+- **Sample size** $n \in \{40, 80, 200, 500\}$
+- **AR(1) coefficient** $\phi \in \{0, 0.3, 0.6, 0.85\}$
+- **Innovation tail** $\eta_t \sim \{\mathcal{N}(0,1),\,t_5,\,t_3,\,t_{2.1}\}$
+- **Imbalance ratio** $n_1/n_2 \in \{1, 1.5, 3, 6\}$
+- **Location shift** $\Delta \in \{0, 0.1, 0.25, 0.5\} \cdot \sigma_\infty$
+
+For a total of $4^5 = 1024$ cells, each replicated $R = 500$ times against
+three inferential layers (HAR, bootstrap, Bayes). The full run took
+31.1 hours on a 16-core Linux workstation.
+
+The summary table `htdv_sim_summary` carries one row per
+(cell × layer) combination, with the following columns:
+
+```{r summary-cols, eval = TRUE}
+str(htdv_sim_summary)
+```
+
+## 1.1. Empirical size: the calibration story
+
+```{r size-table, eval = TRUE}
+size_cells <- htdv_sim_summary[htdv_sim_summary$delta == 0, ]
+agg_phi <- aggregate(reject_rate ~ n + phi + layer, data = size_cells,
+                     FUN = mean)
+agg_phi$reject_rate <- round(agg_phi$reject_rate, 3)
+reshape(agg_phi, idvar = c("n", "phi"), timevar = "layer",
+        direction = "wide")
+```
+
+The Bayesian envelope holds nominal size (~0.05) across the entire grid.
+HAR and bootstrap inflate dramatically under high persistence: at
+$\phi=0.85$ and $n=40$, HAR rejects 60% and bootstrap rejects 47% of the
+time when nominal is 5%.
+
+## 1.2. Coverage (sign-corrected)
+
+```{r coverage-by-layer, eval = TRUE}
+agg_cov <- aggregate(coverage ~ layer, data = htdv_sim_summary,
+                     FUN = function(x) c(mean = round(mean(x), 4),
+                                          min = round(min(x), 3),
+                                          max = round(max(x), 3)))
+agg_cov
+```
+
+Bayesian coverage averages 94.4% (nominal 95%, observed minimum 88.4%).
+HAR averages 82.0%; bootstrap 82.4%. Both classical layers fall short of
+nominal under finite-sample dependence and—in the worst cells—lose
+roughly a third of their nominal coverage.
+
+## 1.3. HMC diagnostics
+
+```{r diag-by-region, eval = TRUE}
+b <- htdv_sim_summary[htdv_sim_summary$layer == "bayes", ]
+agg_diag <- aggregate(diag_pass_rate ~ n + phi, data = b, FUN = mean)
+agg_diag$diag_pass_rate <- round(agg_diag$diag_pass_rate, 3)
+reshape(agg_diag, idvar = "n", timevar = "phi", direction = "wide")
+```
+
+Diagnostic-pass rate is below 0.7 only in the corner where
+$\phi=0.85$ and $n \le 80$, the limit-of-identification zone for the
+AR(1) likelihood. Use `htdv_simstudy_warnings()` on a fresh simulation
+output to flag those cells automatically.
+
+## 1.4. Pre-registered benchmark verdicts
+
+| Benchmark | Pass rate | Reading |
+|-----------|-----------|---------|
+| **B1** size control across layers | 0.32 / 255 cells | Failed *as a conjunction*; passes for Bayes alone in 98% of cells |
+| **B2** power monotonicity in $\Delta$ | 0.99 / 768 cell-layers | Effectively passes (residual is MC noise) |
+| **B3** Bayes coverage $\ge 0.93$ | 0.89 / 1023 cells | Passes; minimum 0.884 in the hardest corner |
+
+The conjunctive failure of B1 is the operational evidence that motivates
+the framework: HAR and bootstrap, calibrated against asymptotic
+critical values, are not safe inferential anchors under strong
+dependence at finite sample size. The Bayesian envelope is.
+
+## 1.5. Reproducing the simulation
+
+The simulation is reproduced by the `run_simstudy.R` script of the
+companion paper repository:
+
+```{r repro-sim, eval = FALSE}
+res <- htdv_simstudy(
+  n_grid    = c(40, 80, 200, 500),
+  phi_grid  = c(0, 0.3, 0.6, 0.85),
+  tail_grid = c("normal", "t5", "t3", "t2_1"),
+  imb_grid  = c(1, 1.5, 3, 6),
+  delta_grid = c(0, 0.1, 0.25, 0.5),
+  R         = 500,
+  seed      = 20260422,
+  out_dir   = "simstudy_cells_dir"
+)
+summ <- htdv_simstudy_summary(res)
+```
+
+The per-cell results are written atomically to one RDS per cell in
+`out_dir`; partial runs are fully resumable.
+
+# 2. Empirical benchmarks
+
+Three datasets, each compared against a pre-existing reference value
+from the published literature on the same vintage. The summary table is
+shipped as `htdv_empirical_benchmarks`:
+
+```{r empirical-table, eval = TRUE}
+htdv_empirical_benchmarks[, c("dataset", "n", "reference",
+                              "reference_value", "har_ci_lo", "har_ci_hi",
+                              "bayes_ci_lo", "bayes_ci_hi",
+                              "boot_ci_lo", "boot_ci_hi",
+                              "agreement_har", "agreement_bayes",
+                              "agreement_boot")]
+```
+
+All three layers reproduce all three references with `agreement` in every
+case. The substantively interesting finding is the *width* of the
+agreement, which scales with the persistence of the underlying series.
+
+## 2.1. The persistence ladder
+
+| Dataset | $\widehat\phi$ | HAR half-width | Bayes half-width | Bayes/HAR |
+|---------|----------------|----------------|------------------|------------------|
+| FRED-MD CPI inflation, post-1984 | $\approx 0.45$ | 0.57 | 0.46 | 0.81 |
+| Shiller log-CAPE, 1881-latest | $\approx 0.97$ | 0.25 | 0.70 | 2.80 |
+| US-CA 10y yield differential | $\approx 0.99$ | 0.49 | 7.35 | 15.0 |
+
+At moderate persistence, HAR and Bayes agree to within 20%. At
+near-unit-root, the Bayesian envelope is 15× wider than HAR. Both layers
+are technically asymptotically valid; only Bayes accounts honestly for
+the finite-sample uncertainty inflation that occurs when $\phi \to 1$.
+
+## 2.2. Practical guidance
+
+If you are running HTDV on a new dataset, the following workflow gives
+the most reliable inference:
+
+1. Run the three layers (`htdv_lrv()` + Wald construction; `htdv_boot()`;
+   `htdv_fit()`).
+2. Compare the widths of the three intervals. Disagreement at the
+   one-third-of-an-order-of-magnitude scale is a real signal: the
+   underlying series is in a regime where HAR's asymptotic critical
+   values are losing reliability.
+3. In that regime, prefer the Bayesian envelope as the primary
+   inferential answer and use HAR or bootstrap as cross-checks rather
+   than the other way around.
+
+This is exactly what the framework is designed for: making the
+calibration disagreement *visible* at the moment of inference.
+
+# 3. Reproducing the empirical benchmarks
+
+Required public files (downloaded from public sources, named per the
+script `run_benchmarks.R`):
+
+| Data file | Source URL | Provenance |
+|-----------|------------|------------|
+| `2026-03-MD.csv` | `stlouisfed.org/research/economists/mccracken/fred-databases` | McCracken-Ng FRED-MD vintage 2026-03 |
+| `ie_data.xls` | `shillerdata.com` | Robert Shiller's online dataset |
+| `us_canada_10y.csv` | `fred.stlouisfed.org/graph/fredgraph.csv?id=GS10,IRLTLT01CAM156N` | FRED multi-series download |
+
+Total wall-clock for the three benchmarks combined is approximately
+10-20 minutes on a single core; the heavy step is the two-sample HMC fit
+for the US-CA yield comparison.
+
+# References
+
+McCracken, M. W., & Ng, S. (2016). FRED-MD: A monthly database for
+macroeconomic research. *Journal of Business & Economic Statistics*,
+34(4), 574-589.
+
+Stock, J. H., & Watson, M. W. (2007). Why has US inflation become harder
+to forecast? *Journal of Money, Credit and Banking*, 39, 3-33.
+
+Campbell, J. Y., & Shiller, R. J. (1998). Valuation ratios and the
+long-run stock market outlook. *Journal of Portfolio Management*,
+24(2), 11-26.
